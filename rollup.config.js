@@ -28,6 +28,7 @@ const indexConfig = {
       exclude: 'node_modules/**',
       presets: ['solid', '@babel/preset-typescript'],
       extensions,
+      sourceMaps: true
     }),
     postcss({
       plugins: [autoprefixer(), tailwindcss()],
@@ -62,6 +63,7 @@ const configs = [
     output: {
       file: 'dist/web.js',
       format: 'es',
+      sourcemap: true,
     },
   },
   {

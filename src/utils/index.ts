@@ -1,3 +1,5 @@
+import * as sseExtracter from './sseExtracter';
+
 export const isNotDefined = <T>(value: T | undefined | null): value is undefined | null => value === undefined || value === null;
 
 export const isDefined = <T>(value: T | undefined | null): value is NonNullable<T> => value !== undefined && value !== null;
@@ -52,6 +54,11 @@ export const sendRequest = async <ResponseData>(
       data = await response.blob();
     } else {
       data = await response.text();
+      sseExtracter.getTextAsSseMessage(data, (event, error) => {
+        if (error == null && event?.data) {
+          data = JSON.parse(event.data);
+        }
+      });
     }
     if (!response.ok) {
       let errorMessage;

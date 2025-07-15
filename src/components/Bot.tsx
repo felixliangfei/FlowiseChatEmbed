@@ -36,6 +36,7 @@ import { removeLocalStorageChatHistory, getLocalStorageChatflow, setLocalStorage
 import { cloneDeep } from 'lodash';
 import { FollowUpPromptBubble } from '@/components/bubbles/FollowUpPromptBubble';
 import { fetchEventSource, EventStreamContentType } from '@microsoft/fetch-event-source';
+import { EEAgentConfig, EEFrontAgent, EEFrontCommandsRegister } from '@/features/eeagent/EEFrontAgent';
 
 export type FileEvent<T = EventTarget> = {
   target: T;
@@ -172,6 +173,7 @@ export type BotProps = {
   dateTimeToggle?: DateTimeToggleTheme;
   renderHTML?: boolean;
   closeBot?: () => void;
+  eeAgentConfig?: EEAgentConfig;
 };
 
 export type LeadsConfig = {
@@ -515,6 +517,16 @@ export const Bot = (botProps: BotProps & { class?: string }) => {
   const [isDragActive, setIsDragActive] = createSignal(false);
   const [uploadedFiles, setUploadedFiles] = createSignal<{ file: File; type: string }[]>([]);
   const [fullFileUploadAllowedTypes, setFullFileUploadAllowedTypes] = createSignal('*');
+
+  createMemo(()=>{
+    try{
+      const eeAgent = new EEFrontAgent({baseUrl: botProps.eeAgentConfig?.baseUrl ?? "http://localhost:3001/eeagent"});
+      EEFrontCommandsRegister(eeAgent);
+      return eeAgent;
+    }catch(e){
+      console.error(e);
+    }
+  });
 
   createMemo(() => {
     const customerId = (props.chatflowConfig?.vars as any)?.customerId;
@@ -1178,6 +1190,13 @@ export const Bot = (botProps: BotProps & { class?: string }) => {
 
   const clearChat = () => {
     try {
+      fetch(`${props.apiHost}/api/v1/clear/${props.chatflowid}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: "{}",
+      });
       removeLocalStorageChatHistory(props.chatflowid);
       setChatId(
         (props.chatflowConfig?.vars as any)?.customerId ? `${(props.chatflowConfig?.vars as any).customerId.toString()}+${uuidv4()}` : uuidv4(),
