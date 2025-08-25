@@ -207,6 +207,17 @@ export class EEUIUtils {
             functionList: funcItems,
         }
     }
+
+    public static gotoFunction(functionId: string) {
+        const funcConfig = [
+            "ID=",
+            functionId,
+            "&CSRFTOKEN=", CSRFTOKEN
+        ].join("");
+        if(typeof mCLICKFunc === "function"){
+            mCLICKFunc(funcConfig);
+        }
+    }
 }
 
 export function EEFrontCommandsRegister(agent: EEFrontAgent) {
@@ -216,7 +227,7 @@ export function EEFrontCommandsRegister(agent: EEFrontAgent) {
     });
     agent.addCommand("ui.openFunction", args => {
         const functionId = args.body.functionId;
-        $Q(`div[id="${functionId}"][role="button"]`, EEUIUtils.getWindowDocument("work")).trigger("click");
+        EEUIUtils.gotoFunction(functionId);
         return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
     });
 }
