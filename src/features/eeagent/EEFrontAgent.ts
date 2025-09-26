@@ -11,6 +11,12 @@ export type EEAgentConfig = {
     maxRetries?: number
 }
 
+const ScreenFieldSchema = z.object({
+    name: z.string(),
+    description: z.string(),
+    value: z.union([z.string(), z.number(), z.array(z.lazy<any>(() => ScreenFieldSchema))]),
+})
+
 const ContextSchema = z.object({
     country: z.string().describe("country of the user").optional(),
     unitCode: z.string().describe("unit code of the user").optional(),
@@ -25,12 +31,18 @@ const ContextSchema = z.object({
     originalFunctionName: z.string().describe("current original function name").optional(),
     originalFunctionDescription: z.string().describe("current original function description").optional(),
     originalFunctionShortName: z.string().describe("current original function short name").optional(),
-    functionList: z.array(z.object({
-        functionId: z.string().describe("function id in the function list"),
-        functionDescription: z.string().describe("function description in the function list"),
-        functionGroupId: z.string().describe("function group id in the function list"),
-        functionGroupDescription: z.string().describe("function group description in the function list"),
-    })).describe("function list of the user").optional(),
+    isFunctionListShow: z.boolean().describe("whether the function list or dashboard is show").optional(),
+    functionScreenFields: z.array(z.object({
+        name: z.string().describe("field id or name"),
+        description: z.string().describe("field label or description"),
+        value: z.union([z.string(), z.number(), z.array(z.record(z.string()))]).describe("field value"),
+    })).describe("current function screen fields").optional(),
+    // functionList: z.array(z.object({
+    //     functionId: z.string().describe("function id in the function list"),
+    //     functionDescription: z.string().describe("function description in the function list"),
+    //     functionGroupId: z.string().describe("function group id in the function list"),
+    //     functionGroupDescription: z.string().describe("function group description in the function list"),
+    // })).describe("function list of the user").optional(),
 }).catchall(z.any());
 export type ContextType = z.infer<typeof ContextSchema>;
 const CommandResultSchema = z.object({
@@ -79,9 +91,26 @@ export class EEFrontAgent {
     private readonly onCommand: (command: string, args: any) => void = (command, args) => {
         const handler = this.commandHandlers.get(command);
         if (handler) {
-            const result = handler(args);
-            if (result) {
-                this.pushback(command, { ...result, code: 0, message: "Completed" });
+            try {
+                console.log(`command '${command}' input: ${JSON.stringify(args)}`);
+                const result = handler(args);
+                if (result) {
+                    this.pushback(command, { ...result, code: 0, message: "Completed" });
+                }
+            } catch (e: unknown) {
+                let message: string;
+                if (e instanceof Error) {
+                    message = `Error: ${e.message}\n${e.stack}`;
+                } else {
+                    message = `Unknown error: ${JSON.stringify(e)}`;
+                }
+                console.error(message);
+                this.pushback(command, {
+                    userId: args.headers.userId,
+                    sessionId: args.headers.sessionId,
+                    code: 500,
+                    message
+                });
             }
         } else {
             this.pushback(command, {
@@ -92,14 +121,16 @@ export class EEFrontAgent {
             });
         }
     };
-    private readonly pushback: (command: string, data: CommandResultType) => void = (command, data) => {
+    private readonly pushback: (command: string, data: CommandResultType) => void = (_command, data) => {
+        console.log(`command '${_command}' output: ${JSON.stringify(data)}`);
         fetch(this.baseUrl + this.pushEndpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify(data)
-        })
+        }).then(result => console.log(`command '${_command}' output pushback to MCP server completed`))
+            .catch(err => console.error(`command '${_command}' output pushback to MCP server error`, err));
     }
 
     private connectSSE() {
@@ -162,14 +193,32 @@ export class EEFrontAgent {
 export class EEUIUtils {
     private constructor() { }
 
-    public static getFrameWindow(name: string) {
+    public static getFrameSet(frameSetId: string, doc?: Document) {
         const $E = EEHtml ?? parent.EEHtml;
-        return $E?.getFrameWindow(name);
+        return $E?.getFrameSet(frameSetId, doc);
     }
 
-    public static getWindowDocument(name: string) {
+    public static getFrameWindow(name: string, baseWin?: Window) {
         const $E = EEHtml ?? parent.EEHtml;
-        return $E?.getFrameDocument(name);
+        return $E?.getFrameWindow(name, baseWin);
+    }
+
+    public static getFrameDocument(name: string, baseWin?: Window) {
+        const $E = EEHtml ?? parent.EEHtml;
+        return $E?.getFrameDocument(name, baseWin);
+    }
+
+    public static getIFrame(iframeId: string, doc?: Document) {
+        const $E = EEHtml ?? parent.EEHtml;
+        return $E?.getIFrame(iframeId, doc);
+    }
+
+    public static getTopWindow() {
+        const $E = EEHtml ?? parent.EEHtml;
+        return $E?.getTopWindow();
+    }
+    public static getTopDocument() {
+        return EEUIUtils.getTopWindow().document;
     }
 
     public static getOpenedWindow(name: string) {
@@ -178,18 +227,22 @@ export class EEUIUtils {
         return childWindows.find(w => w.name === name);
     }
 
+    public static getCSRF() {
+        return CSRF;
+    }
+
     public static getContextData(): ContextType {
         const workWin = EEUIUtils.getFrameWindow("work") ?? window;
         const funcWin: any = window;
-        const funcList = funcWin["userFunctionList"] as Array<Array<string>>;
-        const funcItems = funcList?.map(i => {
-            return {
-                functionId: i[2],
-                functionDescription: i[1],
-                functionGroupId: i[5],
-                functionGroupDescription: i[3]
-            }
-        });
+        // const funcList = funcWin["userFunctionList"] as Array<Array<string>>;
+        // const funcItems = funcList?.map(i => {
+        //     return {
+        //         functionId: i[2],
+        //         functionDescription: i[1],
+        //         functionGroupId: i[5],
+        //         functionGroupDescription: i[3]
+        //     }
+        // });
         return {
             country: workWin["SYS_BANK_COUNTRY"],
             unitCode: workWin["SYS_BUSI_UNIT"],
@@ -204,19 +257,13 @@ export class EEUIUtils {
             originalFunctionName: workWin["SYS_ORG_FUNCTION_NAME"],
             originalFunctionDescription: workWin["SYS_ORG_FUNCTION_DESC"],
             originalFunctionShortName: workWin["SYS_ORG_FUNCTION_SHORT_NAME"],
-            functionList: funcItems,
+            isFunctionListShow: workWin["SYS_FUNCTION_ID"] == null || workWin["SYS_FUNCTION_ID"] == "",
         }
     }
 
     public static gotoFunction(functionId: string) {
-        const funcConfig = [
-            "ID=",
-            functionId,
-            "&CSRFTOKEN=", CSRFTOKEN
-        ].join("");
-        if(typeof mCLICKFunc === "function"){
-            mCLICKFunc(funcConfig);
-        }
+        const operations = window['Operations'] || {};
+        operations.Dashboard?.openFunction(functionId); //由于EEV6 UIUX是react组件，外部无法控制react组件中的方法，需要修改Dashboard暴露openFunction方法。
     }
 }
 
@@ -228,6 +275,14 @@ export function EEFrontCommandsRegister(agent: EEFrontAgent) {
     agent.addCommand("ui.openFunction", args => {
         const functionId = args.body.functionId;
         EEUIUtils.gotoFunction(functionId);
+        return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
+    });
+    agent.addCommand("ui.openFunctionTemplateList", args => {
+        $Q("button[id='_LoadTmpl']").trigger("click");
+        return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
+    });
+    agent.addCommand("ui.searchFunctionTemplateList", args => {
+        // to do
         return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
     });
 }

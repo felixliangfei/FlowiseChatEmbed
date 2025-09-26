@@ -1,0 +1,16 @@
+{
+    "configurations": [
+        {
+            "type": "chrome",
+            "request": "launch",
+            "name": "Debug SolidJS App",
+            "url": "http://localhost:5678",
+            "webRoot": "${workspaceFolder}/src",
+            "sourceMaps": true,
+            "trace": true,
+            "skipFiles": [
+                "<node_internals>/**"
+            ]
+        }
+    ]
+}
