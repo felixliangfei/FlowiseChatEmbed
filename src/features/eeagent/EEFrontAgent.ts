@@ -11,11 +11,29 @@ export type EEAgentConfig = {
     maxRetries?: number
 }
 
-const ScreenFieldSchema = z.object({
-    name: z.string(),
-    description: z.string(),
-    value: z.union([z.string(), z.number(), z.array(z.lazy<any>(() => ScreenFieldSchema))]),
-})
+type FunctionScreenFieldValueType = string | number | Record<string, any>;
+
+const FunctionScreenFieldValueSchema: z.ZodType<FunctionScreenFieldValueType> = z.lazy(() =>
+    z.union([
+        z.string(),
+        z.number(),
+        z.record(z.string(), FunctionScreenFieldValueSchema)
+    ])
+);
+
+const FunctionScreenFieldsSchema = z.array(
+    z.object({
+        name: z.string()
+            .describe("field id or name")
+            .min(1),
+        description: z.string()
+            .describe("field label or description")
+            .min(1),
+        value: FunctionScreenFieldValueSchema
+            .describe("field value")
+            .optional(),
+    })
+);
 
 const ContextSchema = z.object({
     country: z.string().describe("country of the user").optional(),
@@ -32,11 +50,9 @@ const ContextSchema = z.object({
     originalFunctionDescription: z.string().describe("current original function description").optional(),
     originalFunctionShortName: z.string().describe("current original function short name").optional(),
     isFunctionListShow: z.boolean().describe("whether the function list or dashboard is show").optional(),
-    functionScreenFields: z.array(z.object({
-        name: z.string().describe("field id or name"),
-        description: z.string().describe("field label or description"),
-        value: z.union([z.string(), z.number(), z.array(z.record(z.string()))]).describe("field value"),
-    })).describe("current function screen fields").optional(),
+    isCataScreenShow: z.boolean().describe("whether the catalog screen is show").optional(),
+    isFuncScreenShow: z.boolean().describe("whether the function screen is show").optional(),
+    functionScreenFieldsSchema: FunctionScreenFieldsSchema.optional(),
     // functionList: z.array(z.object({
     //     functionId: z.string().describe("function id in the function list"),
     //     functionDescription: z.string().describe("function description in the function list"),
@@ -62,7 +78,7 @@ export class EEFrontAgent {
     private readonly sseEndpoint: string;
     private readonly pushEndpoint: string;
     private readonly maxRetries: number;
-    private readonly commandHandlers = new Map<string, (args: any) => CommandResultType>();
+    private readonly commandHandlers = new Map<string, (args: any) => Promise<CommandResultType>>();
 
     constructor(config: EEAgentConfig) {
         this.config = config;
@@ -73,27 +89,28 @@ export class EEFrontAgent {
         this.connectSSE();
     }
 
-    public addCommand(command: string, handler: (args: any) => CommandResultType): void {
+    public addCommand(command: string, handler: (args: any) => Promise<CommandResultType>): void {
         this.commandHandlers.set(command, handler);
     }
 
-    public runCommand(command: string, args: any): any {
+    public async runCommand(command: string, args: any): Promise<CommandResultType> {
         const handler = this.commandHandlers.get(command);
         if (handler) {
-            return handler(args);
+            return await handler(args);
         }
+        return { userId: args.headers.userId, sessionId: args.headers.sessionId, code: 404, message: `'${command}' command not found` } as CommandResultType;
     }
 
     public clearCommands: () => void = () => {
         this.commandHandlers.clear();
     }
 
-    private readonly onCommand: (command: string, args: any) => void = (command, args) => {
+    private async onCommand(command: string, args: any): Promise<void> {
         const handler = this.commandHandlers.get(command);
         if (handler) {
             try {
                 console.log(`command '${command}' input: ${JSON.stringify(args)}`);
-                const result = handler(args);
+                const result = await handler(args);
                 if (result) {
                     this.pushback(command, { ...result, code: 0, message: "Completed" });
                 }
@@ -134,7 +151,6 @@ export class EEFrontAgent {
     }
 
     private connectSSE() {
-        const onCommandHandler = this.onCommand;
         fetchEventSource(this.config.baseUrl + this.sseEndpoint, {
             openWhenHidden: true,
             method: 'POST',
@@ -161,11 +177,11 @@ export class EEFrontAgent {
                     throw new Error('sse connection error');
                 }
             },
-            async onmessage(e) {
+            onmessage: async (e) => {
                 if (e.event == "command") {
                     console.log(`event message: ${JSON.stringify(e)}`);
                     const { command, input } = JSON.parse(e.data);
-                    onCommandHandler(command, input);
+                    await this.onCommand(command, input);
                 }
             },
             onerror: (err) => {
@@ -231,9 +247,22 @@ export class EEUIUtils {
         return CSRF;
     }
 
+    public static async sleep(ms: number) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
     public static getContextData(): ContextType {
         const workWin = EEUIUtils.getFrameWindow("work") ?? window;
         const funcWin: any = window;
+        const isCataScreen = $Q("form", EEUIUtils.getFrameDocument("work")).attr("name") == "cataform";
+        const isFuncScreen = $Q("form", EEUIUtils.getFrameDocument("work")).attr("name") == "MAINFORM";
+        const generateFuncScreenFieldsSchema = () => {
+            return isFuncScreen ? $Q("input,select,textarea", EEUIUtils.getFrameDocument("work")).filter((i, e) => $Q(e).attr("type") != "hidden")
+                .map((i, e) => ({
+                    name: $Q(e).attr("id") ?? $Q(e).attr("name") ?? "",
+                    description: $Q(e).attr("title") ?? "",
+                })).filter((i, e) => e.name != "").toArray() : [];
+        };
         // const funcList = funcWin["userFunctionList"] as Array<Array<string>>;
         // const funcItems = funcList?.map(i => {
         //     return {
@@ -258,6 +287,9 @@ export class EEUIUtils {
             originalFunctionDescription: workWin["SYS_ORG_FUNCTION_DESC"],
             originalFunctionShortName: workWin["SYS_ORG_FUNCTION_SHORT_NAME"],
             isFunctionListShow: workWin["SYS_FUNCTION_ID"] == null || workWin["SYS_FUNCTION_ID"] == "",
+            isCataScreenShow: isCataScreen,
+            isFuncScreenShow: isFuncScreen,
+            functionScreenFieldsSchema: generateFuncScreenFieldsSchema(),
         }
     }
 
@@ -268,20 +300,32 @@ export class EEUIUtils {
 }
 
 export function EEFrontCommandsRegister(agent: EEFrontAgent) {
-    agent.addCommand("context.retrieveContext", args => {
+    agent.addCommand("context.retrieveContext", async args => {
         const ctx = EEUIUtils.getContextData();
         return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: ctx, schema: zodToJsonSchema(ContextSchema, "ContextSchema") } as CommandResultType;
     });
-    agent.addCommand("ui.openFunction", args => {
+    agent.addCommand("ui.openFunction", async args => {
         const functionId = args.body.functionId;
         EEUIUtils.gotoFunction(functionId);
         return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
     });
-    agent.addCommand("ui.openFunctionTemplateList", args => {
-        $Q("button[id='_LoadTmpl']").trigger("click");
+    agent.addCommand("ui.openFunctionTemplateList", async args => {
+        const loadTmplButton = $Q("#_LoadTmpl", EEUIUtils.getFrameDocument('eeToolbar'));
+        if (loadTmplButton.length > 0) {
+            $Q("#_LoadTmpl", EEUIUtils.getFrameDocument('eeToolbar')).trigger("click");
+        } else {
+            $Q("#work").one("load", async () => {
+                await EEUIUtils.sleep(1000);
+                $Q("#_LoadTmpl", EEUIUtils.getFrameDocument('eeToolbar')).trigger("click");
+            });
+        }
         return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
     });
-    agent.addCommand("ui.searchFunctionTemplateList", args => {
+    agent.addCommand("ui.searchFunctionTemplateList", async args => {
+        // to do
+        return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
+    });
+    agent.addCommand("ui.fillFunctionScreen", async args => {
         // to do
         return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
     });
