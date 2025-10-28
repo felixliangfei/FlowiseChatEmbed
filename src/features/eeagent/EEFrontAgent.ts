@@ -17,6 +17,7 @@ const FunctionScreenFieldValueSchema: z.ZodType<FunctionScreenFieldValueType> = 
     z.union([
         z.string(),
         z.number(),
+        z.array(FunctionScreenFieldValueSchema),
         z.record(z.string(), FunctionScreenFieldValueSchema)
     ])
 );
@@ -52,7 +53,7 @@ const ContextSchema = z.object({
     isFunctionListShow: z.boolean().describe("whether the function list or dashboard is show").optional(),
     isCataScreenShow: z.boolean().describe("whether the catalog screen is show").optional(),
     isFuncScreenShow: z.boolean().describe("whether the function screen is show").optional(),
-    functionScreenFieldsSchema: FunctionScreenFieldsSchema.optional(),
+    // functionScreenFieldsSchema: FunctionScreenFieldsSchema.describe("function screen fields schema").optional(),
     // functionList: z.array(z.object({
     //     functionId: z.string().describe("function id in the function list"),
     //     functionDescription: z.string().describe("function description in the function list"),
@@ -289,7 +290,7 @@ export class EEUIUtils {
             isFunctionListShow: workWin["SYS_FUNCTION_ID"] == null || workWin["SYS_FUNCTION_ID"] == "",
             isCataScreenShow: isCataScreen,
             isFuncScreenShow: isFuncScreen,
-            functionScreenFieldsSchema: generateFuncScreenFieldsSchema(),
+            // functionScreenFieldsSchema: generateFuncScreenFieldsSchema(),
         }
     }
 
@@ -297,8 +298,69 @@ export class EEUIUtils {
         const operations = window['Operations'] || {};
         operations.Dashboard?.openFunction(functionId); //由于EEV6 UIUX是react组件，外部无法控制react组件中的方法，需要修改Dashboard暴露openFunction方法。
     }
-}
 
+    public static applyDataToScreen(data: any) {
+        let fw = EEUIUtils.getFrameWindow("work") ?? window;
+        let fm = fw.document.MAINFORM;
+        let jsonObj = data;
+        let alRule = jsonObj["alRule"];
+        let isOnchange = jsonObj["isOnchange"];
+        fw.alRule = alRule;
+        let dateFormat = fw.SYS_DATE_FORMAT ?? "yyyy-MM-dd";
+        for (let name in jsonObj) {
+            if (name == null || "Return_Msg" === name || "alRule" === name
+                || "isOnchange" === name || "C_MAIN_REF" === name
+                || "C_TRX_REF" === name
+                || typeof alRule !== "undefined" && fw.inArray(alRule, name)) {
+                continue;
+            }
+            let obj = fm.querySelector("[name='" + name + "']");
+            let value = jsonObj[name];
+            if (typeof value == "object") {
+                if (fw.processDODataForloadTamplate) fw.processDODataForloadTamplate(name, value);
+            }
+            if (obj && obj.className.indexOf("DATE_") != -1 && value.length > 0) {
+                value = fw.formatDateForSubmit(dateFormat, value);
+            }
+            if (obj) obj.value = value;
+        }
+        if (fw.OnLoadTemplate) fw.OnLoadTemplate();
+        if ("TRUE" === isOnchange) {
+            if (fw.SYS_FormatDataForTemplate) fw.SYS_FormatDataForTemplate(alRule);
+            for (let name in jsonObj) {
+                if (name == null
+                    || "Return_Msg" === name
+                    || "alRule" === name
+                    || "isOnchange" === name
+                    || "C_MAIN_REF" === name
+                    || "C_TRX_REF" === name
+                    || (typeof alRule != "undefined" && fw.inArray(alRule, name))) {
+                    continue
+                }
+                let obj = fm.querySelector("[name='" + name + "']");
+                if (obj) {
+                    let value = jsonObj[name];
+                    if (value != null && value != "") EEHtml.fireEvent(obj, "onchange");
+                }
+            }
+        }
+        if (fw.SYS_intermediateQuery) fw.SYS_intermediateQuery("_LOAD_TEMPLATE");
+        if ("TRUE" != isOnchange && fw.SYS_FormatDataForTemplate) fw.SYS_FormatDataForTemplate(alRule);
+        try {
+            if (fw.document.MAINFORM._TEXTAREA_DO_DATA_PaymentTermsHeader) {
+                fw.document.MAINFORM._TEXTAREA_DO_DATA_PaymentTermsHeader.value = jsonObj["payment_Data"];
+                fw.DoRoot.addDoData('PaymentTermsHeader', "");
+                fw.DoRoot.initTemplateDO()
+            } else if (fw.document.MAINFORM._TEXTAREA_DO_DATA_PaymentDealer) {
+                fw.document.MAINFORM._TEXTAREA_DO_DATA_PaymentDealer.value = jsonObj["payment_Data"];
+                fw.DoRoot.addDoData('PaymentTermsHeader', "");
+                fw.DoRoot.initTemplateDO()
+            }
+        } catch (e) {
+            console.log(e);
+        }
+    }
+}
 export function EEFrontCommandsRegister(agent: EEFrontAgent) {
     agent.addCommand("context.retrieveContext", async args => {
         const ctx = EEUIUtils.getContextData();
@@ -326,7 +388,7 @@ export function EEFrontCommandsRegister(agent: EEFrontAgent) {
         return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
     });
     agent.addCommand("ui.fillFunctionScreen", async args => {
-        // to do
+        EEUIUtils.applyDataToScreen(args.body.screenData);
         return { userId: args.headers.userId, sessionId: args.headers.sessionId, result: {} } as CommandResultType;
     });
 }
